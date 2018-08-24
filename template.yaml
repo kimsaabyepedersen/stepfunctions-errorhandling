@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  StepFuntions
+
+  Sample SAM Template for StepFuntions
+
+Globals:
+  Function:
+    Timeout: 20
+
+Resources:
+
+  MockAPIFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: target/stepfunctions-1.0.jar
+      Handler: org.saabye_pedersen.functions.MockAPIFunctionHandler::handleRequest
+      Runtime: java8
+
+  StateMachineRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Principal:
+            Service:
+            - "states.amazonaws.com"
+          Action:
+          - "sts:AssumeRole"
+      Path: "/"
+
+  StateMachineRolePolicy:
+    Type: "AWS::IAM::Policy"
+    Properties:
+      PolicyName: "invokeLambda"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action: "lambda:InvokeFunction"
+          Resource: "*"
+      Roles:
+      - Ref: "StateMachineRole"
+
+  StateMachine:
+    Type: "AWS::StepFunctions::StateMachine"
+    Properties:
+      RoleArn: !GetAtt StateMachineRole.Arn
+      StateMachineName: MyAPIStateMachine
+      DefinitionString: !Sub |-
+        {
+          "Comment": "An example of using retry and catch to handle API responses",
+          "StartAt": "Call API",
+          "States": {
+            "Call API": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${MockAPIFunction}",
+              "Next" : "OK",
+              "Comment": "Catch a 429 (Too many requests) API exception, and resubmit the failed request in a rate-limiting fashion.",
+              "Retry" : [ {
+                "ErrorEquals": [ "org.saabye_pedersen.functions.TooManyRequestsException" ],
+                "IntervalSeconds": 1,
+                "MaxAttempts": 2
+              } ],
+              "Catch": [
+                {
+                  "ErrorEquals": ["org.saabye_pedersen.functions.TooManyRequestsException"],
+                  "Next": "Wait and Try Later"
+                }, {
+                  "ErrorEquals": ["org.saabye_pedersen.functions.ServerUnavailableException"],
+                  "Next": "Server Unavailable"
+                }, {
+                  "ErrorEquals": ["States.ALL"],
+                  "Next": "Catch All"
+                }
+              ]
+            },
+            "Wait and Try Later": {
+              "Type": "Wait",
+              "Seconds" : 1,
+              "Next" : "Change to 200"
+            },
+            "Server Unavailable": {
+              "Type": "Fail",
+              "Error":"org.saabye_pedersen.functions.ServerUnavailable",
+              "Cause": "The server is currently unable to handle the request."
+            },
+            "Catch All": {
+              "Type": "Fail",
+              "Cause": "Unknown error!",
+              "Error": "An error of unknown type occurred"
+            },
+            "Change to 200": {
+              "Type": "Pass",
+              "Result": {"statuscode" :"200"} ,
+              "Next": "Call API"
+            },
+            "OK": {
+              "Type": "Pass",
+              "Result": "The request has succeeded.",
+              "End": true
+            }
+          }
+        }
